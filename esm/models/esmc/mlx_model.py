@@ -87,7 +87,6 @@ import mlx.nn as nn
 import numpy as np
 from huggingface_hub import snapshot_download
 
-
 # ---------------------------------------------------------------------------
 # Fused residual + scale + LayerNorm  Metal kernel
 # ---------------------------------------------------------------------------
@@ -140,16 +139,27 @@ _FUSED_KERNELS: dict[mx.Dtype, object] = {}
 
 
 def _fused_residual_ln(
-    x: mx.array, branch: mx.array, inv_sf: float,
-    ln_weight: mx.array, ln_bias: mx.array, eps: float = 1e-5,
+    x: mx.array,
+    branch: mx.array,
+    inv_sf: float,
+    ln_weight: mx.array,
+    ln_bias: mx.array,
+    eps: float = 1e-5,
 ) -> mx.array:
     """Fused: out = LayerNorm(x + branch * inv_sf, weight, bias, eps)"""
     dtype = x.dtype
     if dtype not in _FUSED_KERNELS:
         _FUSED_KERNELS[dtype] = mx.fast.metal_kernel(
             name="fused_residual_scale_ln",
-            input_names=["x", "branch", "inv_sf", "eps_c", "ln_weight",
-                         "ln_bias", "hidden_dim"],
+            input_names=[
+                "x",
+                "branch",
+                "inv_sf",
+                "eps_c",
+                "ln_weight",
+                "ln_bias",
+                "hidden_dim",
+            ],
             output_names=["out"],
             source=_FUSED_RESIDUAL_LN_SRC,
             ensure_row_contiguous=True,
@@ -157,12 +167,15 @@ def _fused_residual_ln(
     kernel = _FUSED_KERNELS[dtype]
     B, L, H = x.shape
     outputs = kernel(
-        inputs=[x, branch,
-                mx.array([inv_sf], dtype=mx.float32),
-                mx.array([eps],    dtype=mx.float32),
-                ln_weight.astype(mx.float32),
-                ln_bias.astype(mx.float32),
-                mx.array([H], dtype=mx.uint32)],
+        inputs=[
+            x,
+            branch,
+            mx.array([inv_sf], dtype=mx.float32),
+            mx.array([eps], dtype=mx.float32),
+            ln_weight.astype(mx.float32),
+            ln_bias.astype(mx.float32),
+            mx.array([H], dtype=mx.uint32),
+        ],
         template=[("T", dtype)],
         grid=(B * L, 1, 1),
         threadgroup=(32, 1, 1),
@@ -176,12 +189,13 @@ def _fused_residual_ln(
 # Transformer building blocks
 # ---------------------------------------------------------------------------
 
+
 class _SwiGLUFFN(nn.Module):
     def __init__(self, hidden: int, intermediate: int):
         super().__init__()
-        self.ln        = nn.LayerNorm(hidden)
+        self.ln = nn.LayerNorm(hidden)
         self.gate_proj = nn.Linear(hidden, intermediate, bias=False)
-        self.up_proj   = nn.Linear(hidden, intermediate, bias=False)
+        self.up_proj = nn.Linear(hidden, intermediate, bias=False)
         self.down_proj = nn.Linear(intermediate, hidden, bias=False)
 
     def __call__(self, x: mx.array) -> mx.array:
@@ -197,19 +211,20 @@ class _Attention(nn.Module):
     def __init__(self, hidden: int, n_heads: int):
         super().__init__()
         self.n_heads = n_heads
-        self.d_head  = hidden // n_heads
-        self.scale   = self.d_head ** -0.5
-        self.ln      = nn.LayerNorm(hidden)
-        self.q_proj  = nn.Linear(hidden, hidden, bias=False)
-        self.k_proj  = nn.Linear(hidden, hidden, bias=False)
-        self.v_proj  = nn.Linear(hidden, hidden, bias=False)
-        self.q_norm  = nn.LayerNorm(hidden, bias=False)
-        self.k_norm  = nn.LayerNorm(hidden, bias=False)
-        self.o_proj  = nn.Linear(hidden, hidden, bias=False)
-        self.rope    = nn.RoPE(self.d_head, traditional=False, base=10000)
+        self.d_head = hidden // n_heads
+        self.scale = self.d_head**-0.5
+        self.ln = nn.LayerNorm(hidden)
+        self.q_proj = nn.Linear(hidden, hidden, bias=False)
+        self.k_proj = nn.Linear(hidden, hidden, bias=False)
+        self.v_proj = nn.Linear(hidden, hidden, bias=False)
+        self.q_norm = nn.LayerNorm(hidden, bias=False)
+        self.k_norm = nn.LayerNorm(hidden, bias=False)
+        self.o_proj = nn.Linear(hidden, hidden, bias=False)
+        self.rope = nn.RoPE(self.d_head, traditional=False, base=10000)
 
-    def __call__(self, x: mx.array,
-                 return_attn: bool = False) -> tuple[mx.array, Optional[mx.array]]:
+    def __call__(
+        self, x: mx.array, return_attn: bool = False
+    ) -> tuple[mx.array, Optional[mx.array]]:
         B, L, _ = x.shape
         h = self.ln(x)
 
@@ -221,7 +236,8 @@ class _Attention(nn.Module):
             return t.reshape(B, L, self.n_heads, self.d_head).transpose(0, 2, 1, 3)
 
         q, k, v = to_heads(q), to_heads(k), to_heads(v)
-        q = self.rope(q); k = self.rope(k)
+        q = self.rope(q)
+        k = self.rope(k)
 
         if return_attn:
             scores = (q @ k.transpose(0, 1, 3, 2)) * self.scale
@@ -236,24 +252,25 @@ class _Attention(nn.Module):
 
 
 class _Block(nn.Module):
-    def __init__(self, hidden: int, n_heads: int, intermediate: int,
-                 scaling_factor: float = 1.0):
+    def __init__(
+        self, hidden: int, n_heads: int, intermediate: int, scaling_factor: float = 1.0
+    ):
         super().__init__()
-        self.attn           = _Attention(hidden, n_heads)
-        self.ffn            = _SwiGLUFFN(hidden, intermediate)
+        self.attn = _Attention(hidden, n_heads)
+        self.ffn = _SwiGLUFFN(hidden, intermediate)
         self.scaling_factor = scaling_factor
-        self._use_fused_ln  = False
+        self._use_fused_ln = False
 
-    def __call__(self, x: mx.array,
-                 return_attn: bool = False) -> tuple[mx.array, Optional[mx.array]]:
+    def __call__(
+        self, x: mx.array, return_attn: bool = False
+    ) -> tuple[mx.array, Optional[mx.array]]:
         attn_out, attn_w = self.attn(x, return_attn=return_attn)
         inv_sf = 1.0 / self.scaling_factor
 
         if self._use_fused_ln:
             # Fuse: new_x = x + attn_out*inv_sf;  h_ffn = LN(new_x)
             h_ffn = _fused_residual_ln(
-                x, attn_out, inv_sf,
-                self.ffn.ln.weight, self.ffn.ln.bias,
+                x, attn_out, inv_sf, self.ffn.ln.weight, self.ffn.ln.bias
             )
             x = x + attn_out * inv_sf
             ffn_out = self.ffn.forward_on_normed(h_ffn)
@@ -268,9 +285,9 @@ class _Block(nn.Module):
 class _LMHead(nn.Module):
     def __init__(self, hidden: int, vocab: int):
         super().__init__()
-        self.dense      = nn.Linear(hidden, hidden)
+        self.dense = nn.Linear(hidden, hidden)
         self.layer_norm = nn.LayerNorm(hidden)
-        self.decoder    = nn.Linear(hidden, vocab)
+        self.decoder = nn.Linear(hidden, vocab)
 
     def __call__(self, x: mx.array) -> mx.array:
         return self.decoder(self.layer_norm(nn.gelu(self.dense(x))))
@@ -280,6 +297,7 @@ class _LMHead(nn.Module):
 # Top-level model
 # ---------------------------------------------------------------------------
 
+
 class EsmcMLX(nn.Module):
     """ESMC-300M / ESMC-600M / ESMC-6B native MLX model for Apple Silicon.
 
@@ -288,41 +306,52 @@ class EsmcMLX(nn.Module):
 
     Typical usage::
 
-        model  = EsmcMLX.from_pretrained("biohub/ESMC-300M", opt_level=3)
-        model  = EsmcMLX.from_pretrained("biohub/ESMC-600M", opt_level=3)
-        model  = EsmcMLX.from_pretrained("biohub/ESMC-6B",   opt_level=2)  # ≥16 GB RAM
+        model = EsmcMLX.from_pretrained("biohub/ESMC-300M", opt_level=3)
+        model = EsmcMLX.from_pretrained("biohub/ESMC-600M", opt_level=3)
+        model = EsmcMLX.from_pretrained("biohub/ESMC-6B", opt_level=2)  # ≥16 GB RAM
 
-        ids    = mx.array(tokenizer(seq)["input_ids"], dtype=mx.int32)
-        logits = model(ids)          # [B, L, 64]
+        ids = mx.array(tokenizer(seq)["input_ids"], dtype=mx.int32)
+        logits = model(ids)  # [B, L, 64]
         hidden, _, attn = model.encode(ids, return_attentions=True)
     """
 
     CONFIGS = {
-        "biohub/ESMC-300M": dict(hidden=960,  n_heads=15, n_layers=30, intermediate=2560),
-        "biohub/ESMC-600M": dict(hidden=1152, n_heads=16, n_layers=36, intermediate=3072),
+        "biohub/ESMC-300M": dict(
+            hidden=960, n_heads=15, n_layers=30, intermediate=2560
+        ),
+        "biohub/ESMC-600M": dict(
+            hidden=1152, n_heads=16, n_layers=36, intermediate=3072
+        ),
         # ESMC-6B: same architecture, scaled to 80 layers / hidden=2560.
         # Memory: ~12 GB bf16, ~3 GB mxfp4. Requires M-series Mac with ≥16 GB RAM.
-        "biohub/ESMC-6B":   dict(hidden=2560, n_heads=40, n_layers=80, intermediate=6912),
+        "biohub/ESMC-6B": dict(hidden=2560, n_heads=40, n_layers=80, intermediate=6912),
     }
 
     OPT_NAMES = {
         0: "baseline (fp32)",
         1: "mx.compile",
         2: "bfloat16",
-        3: "bf16+compile",   # recommended
+        3: "bf16+compile",  # recommended
         4: "bf16+compile+fused_ln",
     }
 
-    def __init__(self, hidden: int, n_heads: int, n_layers: int,
-                 intermediate: int, vocab: int = 64):
+    def __init__(
+        self,
+        hidden: int,
+        n_heads: int,
+        n_layers: int,
+        intermediate: int,
+        vocab: int = 64,
+    ):
         super().__init__()
         sf = math.sqrt(n_layers / 36)
         self.embed_tokens = nn.Embedding(vocab, hidden)
-        self.layers       = [_Block(hidden, n_heads, intermediate, sf)
-                             for _ in range(n_layers)]
-        self.norm         = nn.LayerNorm(hidden, bias=False)
-        self.lm_head      = _LMHead(hidden, vocab)
-        self._opt_level   = 0
+        self.layers = [
+            _Block(hidden, n_heads, intermediate, sf) for _ in range(n_layers)
+        ]
+        self.norm = nn.LayerNorm(hidden, bias=False)
+        self.lm_head = _LMHead(hidden, vocab)
+        self._opt_level = 0
         self._compiled_fn = None
 
     # ── forward passes ────────────────────────────────────────────────────
@@ -348,7 +377,7 @@ class EsmcMLX(nn.Module):
         """
         x = self.embed_tokens(input_ids)
         all_hidden = [x] if return_hidden_states else None
-        all_attn   = [] if return_attentions else None
+        all_attn = [] if return_attentions else None
 
         for block in self.layers:
             x, attn_w = block(x, return_attn=return_attentions)
@@ -390,9 +419,26 @@ class EsmcMLX(nn.Module):
         scores : list[float]  log P(mut|ctx) - log P(wt|ctx) per mutation
         """
         AA_TO_ID = {
-            "A": 4, "C": 5, "D": 6, "E": 7, "F": 8, "G": 9, "H": 10,
-            "I": 11, "K": 14, "L": 12, "M": 13, "N": 15, "P": 17,
-            "Q": 16, "R": 18, "S": 19, "T": 20, "V": 21, "W": 22, "Y": 23,
+            "A": 4,
+            "C": 5,
+            "D": 6,
+            "E": 7,
+            "F": 8,
+            "G": 9,
+            "H": 10,
+            "I": 11,
+            "K": 14,
+            "L": 12,
+            "M": 13,
+            "N": 15,
+            "P": 17,
+            "Q": 16,
+            "R": 18,
+            "S": 19,
+            "T": 20,
+            "V": 21,
+            "W": 22,
+            "Y": 23,
         }
         MASK_ID = 32
 
@@ -403,9 +449,7 @@ class EsmcMLX(nn.Module):
         pos_to_lp: dict[int, np.ndarray] = {}
 
         for i0 in range(0, len(unique_pos), batch_size):
-            batch_pos = unique_pos[i0: i0 + batch_size]
-            B_curr = len(batch_pos)
-
+            batch_pos = unique_pos[i0 : i0 + batch_size]
             batch_ids = []
             for pos in batch_pos:
                 ids_m = base_ids.copy()
@@ -422,8 +466,7 @@ class EsmcMLX(nn.Module):
 
         scores = []
         for pos, wt_aa, mut_aa in mutations:
-            if (pos not in pos_to_lp
-                    or wt_aa not in AA_TO_ID or mut_aa not in AA_TO_ID):
+            if pos not in pos_to_lp or wt_aa not in AA_TO_ID or mut_aa not in AA_TO_ID:
                 scores.append(float("nan"))
                 continue
             lp = pos_to_lp[pos]
@@ -452,9 +495,11 @@ class EsmcMLX(nn.Module):
 
         if level in (1, 3, 4):
             dummy = mx.zeros((1, 4), dtype=mx.int32)
-            out = self._raw_forward(dummy); mx.eval(out)
+            out = self._raw_forward(dummy)
+            mx.eval(out)
             self._compiled_fn = mx.compile(self._raw_forward)
-            out = self._compiled_fn(dummy); mx.eval(out)
+            out = self._compiled_fn(dummy)
+            mx.eval(out)
 
         self._opt_level = level
         return self
@@ -463,9 +508,7 @@ class EsmcMLX(nn.Module):
 
     @classmethod
     def from_pretrained(
-        cls,
-        repo_id: str = "biohub/ESMC-300M",
-        opt_level: int = 3,
+        cls, repo_id: str = "biohub/ESMC-300M", opt_level: int = 3
     ) -> "EsmcMLX":
         """Load ESMC from HuggingFace Hub and apply optimizations.
 
@@ -478,8 +521,7 @@ class EsmcMLX(nn.Module):
         """
         if repo_id not in cls.CONFIGS:
             raise ValueError(
-                f"Unknown repo: {repo_id!r}. "
-                f"Supported: {sorted(cls.CONFIGS)}"
+                f"Unknown repo: {repo_id!r}. Supported: {sorted(cls.CONFIGS)}"
             )
         cfg = cls.CONFIGS[repo_id]
 
@@ -496,6 +538,7 @@ class EsmcMLX(nn.Module):
 # ---------------------------------------------------------------------------
 # Weight loading
 # ---------------------------------------------------------------------------
+
 
 def _load_weights(model: EsmcMLX, local_dir: Path, n_layers: int) -> None:
     try:
@@ -519,8 +562,8 @@ def _load_weights(model: EsmcMLX, local_dir: Path, n_layers: int) -> None:
     for i, block in enumerate(model.layers):
         p = f"esmc.layers.{i}"
         a = block.attn
-        a.ln.weight     = get(f"{p}.input_layernorm.weight")
-        a.ln.bias       = get(f"{p}.input_layernorm.bias")
+        a.ln.weight = get(f"{p}.input_layernorm.weight")
+        a.ln.bias = get(f"{p}.input_layernorm.bias")
         a.q_proj.weight = get(f"{p}.self_attn.q_proj.weight")
         a.k_proj.weight = get(f"{p}.self_attn.k_proj.weight")
         a.v_proj.weight = get(f"{p}.self_attn.v_proj.weight")
@@ -529,17 +572,17 @@ def _load_weights(model: EsmcMLX, local_dir: Path, n_layers: int) -> None:
         a.k_norm.weight = get(f"{p}.self_attn.k_norm.weight")
 
         f_ = block.ffn
-        f_.ln.weight        = get(f"{p}.post_attention_layernorm.weight")
-        f_.ln.bias          = get(f"{p}.post_attention_layernorm.bias")
+        f_.ln.weight = get(f"{p}.post_attention_layernorm.weight")
+        f_.ln.bias = get(f"{p}.post_attention_layernorm.bias")
         f_.gate_proj.weight = get(f"{p}.mlp.gate_proj.weight")
-        f_.up_proj.weight   = get(f"{p}.mlp.up_proj.weight")
+        f_.up_proj.weight = get(f"{p}.mlp.up_proj.weight")
         f_.down_proj.weight = get(f"{p}.mlp.down_proj.weight")
 
     model.norm.weight = get("esmc.norm.weight")
 
-    model.lm_head.dense.weight      = get("lm_head.dense.weight")
-    model.lm_head.dense.bias        = get("lm_head.dense.bias")
+    model.lm_head.dense.weight = get("lm_head.dense.weight")
+    model.lm_head.dense.bias = get("lm_head.dense.bias")
     model.lm_head.layer_norm.weight = get("lm_head.layer_norm.weight")
-    model.lm_head.layer_norm.bias   = get("lm_head.layer_norm.bias")
-    model.lm_head.decoder.weight    = get("lm_head.decoder.weight")
-    model.lm_head.decoder.bias      = get("lm_head.decoder.bias")
+    model.lm_head.layer_norm.bias = get("lm_head.layer_norm.bias")
+    model.lm_head.decoder.weight = get("lm_head.decoder.weight")
+    model.lm_head.decoder.bias = get("lm_head.decoder.bias")
