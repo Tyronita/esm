@@ -80,7 +80,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -135,7 +135,7 @@ _FUSED_RESIDUAL_LN_SRC = """
     }
 """
 
-_FUSED_KERNELS: dict[mx.Dtype, object] = {}
+_FUSED_KERNELS: dict[Any, Any] = {}
 
 
 def _fused_residual_ln(
@@ -381,9 +381,9 @@ class EsmcMLX(nn.Module):
 
         for block in self.layers:
             x, attn_w = block(x, return_attn=return_attentions)
-            if return_hidden_states:
+            if all_hidden is not None:
                 all_hidden.append(x)
-            if return_attentions:
+            if all_attn is not None:
                 all_attn.append(attn_w)
 
         return self.norm(x), all_hidden, all_attn
