@@ -217,8 +217,9 @@ def load_esmc(
     Example::
 
         model = load_esmc("biohub/ESMC-300M")          # auto-selects best backend
-        model = load_esmc("biohub/ESMC-300M", "mlx")   # native MLX on Apple Silicon
-        model = load_esmc("biohub/ESMC-600M", "cuda")  # CUDA
+        model = load_esmc("biohub/ESMC-600M", "mlx")   # 600M, native MLX
+        model = load_esmc("biohub/ESMC-6B",   "mlx")   # 6B, native MLX (≥16 GB RAM)
+        model = load_esmc("biohub/ESMC-6B",   "cuda")  # 6B on CUDA
 
     """
     dev_str = str(device).lower().strip() if device is not None else "auto"
