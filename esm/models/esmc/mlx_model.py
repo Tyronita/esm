@@ -26,17 +26,35 @@ Optimization levels (opt_level kwarg to from_pretrained / optimize)
   3  bf16+compile   BF16 + mx.compile  [**recommended**]  (+19%)
   4  fused          BF16 + compile + pure-MLX fused residual+LN  (+20%)
 
-Benchmark on Apple M3 8 GB  (MLX 0.32, ESMC-300M, 3 warm-up + 5 runs)
+Benchmark on Apple M3 8 GB  (MLX 0.32, ESMC-300M, 4 warm-up + 5 timed runs)
+Each backend run in an isolated subprocess — no Metal resource contention.
 -----------------------------------------------------------------------
-  Level           L=76   L=140   L=300   L=450   Mem     MAE
-  baseline fp32   37.8ms  56.5ms  103ms   102ms  1332MB  0.000
-  mx.compile      37.1ms  55.5ms   77ms   107ms  1332MB  0.000
-  bf16 only       33.3ms  48.2ms   66ms    83ms   667MB  1.212
-  bf16+compile    32.1ms  47.3ms   64ms    81ms   667MB  1.212
-  fused_ln        32.0ms  47.1ms   64ms    81ms   667MB  1.596
+  MLX opt=3 vs PyTorch MPS bf16 (sdpa), ProteinGym WT sequences
 
-MAE is BF16 rounding vs float32 PyTorch; all levels pass ProteinGym ranking
-(Spearman ρ is unaffected by constant additive logit offsets).
+     L    MLX ms   MPS ms  Speedup
+    70     171      344    2.01×
+   101     189      362    1.92×
+   140     212      466    2.20×
+   161     216      374    1.73×
+   211     260      585    2.25×
+   243     271      603    2.22×
+   281     245      703    2.88×
+   330     214      763    3.57×
+   370     107      789    7.39×
+   428     120      951    7.93×
+   490     137      518    3.79×
+   536     186     1151    6.19×
+  ────────────────────────────
+  Mean    194      634     3.27×  (geomean: 3.0×)
+
+MLX wins at every sequence length, 1.7–8×. Advantage grows with L because
+mx.fast.scaled_dot_product_attention is a fused Metal kernel vs PyTorch SDPA
+dispatcher overhead. Both use bfloat16 weights.
+
+MLX opt levels (isolated, L=140, raw forward pass only):
+  Level           L=140   Mem     MAE vs fp32
+  baseline fp32   56.5ms  1332MB  0.000
+  bf16+compile    47.3ms   667MB  1.212   ← recommended
 
 Batched masked-marginals throughput (L=140, opt=3)
   B=1   51.7 ms/batch   19.3 seq/s   1.00×
