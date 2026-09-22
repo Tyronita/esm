@@ -26,6 +26,7 @@ def is_mlx_available() -> bool:
     """
     try:
         import mlx.core  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -197,8 +198,7 @@ def synchronize(device: torch.device | str | None = None) -> None:
 
 
 def load_esmc(
-    model_name: str = "biohub/ESMC-300M",
-    device: str | torch.device | None = "auto",
+    model_name: str = "biohub/ESMC-300M", device: str | torch.device | None = "auto"
 ):
     """Load an ESMC model, routing to the optimal backend for the current hardware.
 
@@ -216,21 +216,27 @@ def load_esmc(
 
     Example::
 
-        model = load_esmc("biohub/ESMC-300M")          # auto-selects best backend
-        model = load_esmc("biohub/ESMC-600M", "mlx")   # 600M, native MLX
-        model = load_esmc("biohub/ESMC-6B",   "mlx")   # 6B, native MLX (≥16 GB RAM)
-        model = load_esmc("biohub/ESMC-6B",   "cuda")  # 6B on CUDA
+        model = load_esmc("biohub/ESMC-300M")  # auto-selects best backend
+        model = load_esmc("biohub/ESMC-600M", "mlx")  # 600M, native MLX
+        model = load_esmc("biohub/ESMC-6B", "mlx")  # 6B, native MLX (≥16 GB RAM)
+        model = load_esmc("biohub/ESMC-6B", "cuda")  # 6B on CUDA
 
     """
     dev_str = str(device).lower().strip() if device is not None else "auto"
 
-    use_mlx = dev_str == "mlx" or (dev_str == "auto" and not is_cuda_available() and is_mlx_available())
+    use_mlx = dev_str == "mlx" or (
+        dev_str == "auto" and not is_cuda_available() and is_mlx_available()
+    )
 
     if use_mlx:
         from esm.models.esmc.mlx_model import EsmcMLX  # optional dep
+
         return EsmcMLX.from_pretrained(model_name)
 
     from esm.models.esmc import EsmcForMaskedLM
+
     torch_device = resolve_device(device)
     dtype = get_default_model_dtype(torch_device)
-    return EsmcForMaskedLM.from_pretrained(model_name, device=torch_device, dtype=dtype or None)
+    return EsmcForMaskedLM.from_pretrained(
+        model_name, device=torch_device, dtype=dtype or None
+    )
