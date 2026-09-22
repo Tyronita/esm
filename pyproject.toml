@@ -241,6 +241,8 @@ replace-imports-with-any = [
     "cuequivariance_torch.**",
     "flash_attn",
     "flash_attn.**",
+    "mlx",
+    "mlx.**",
     "zstd",
 ]
 
