@@ -1,18 +1,22 @@
 """
-esm/models/esmc/mlx_model.py  —  ESMC-300M / ESMC-600M native MLX inference
+esm/models/esmc/mlx_model.py  —  ESMC-300M / ESMC-600M / ESMC-6B native MLX inference
 
 Apple Silicon (M-series) native Metal GPU inference for ESMC models,
 requiring no CUDA, no MPS PyTorch, and no Triton.
 
-Supports ESMC-300M (biohub/ESMC-300M) and ESMC-600M (biohub/ESMC-600M).
+Supports all three published ESMC checkpoints — identical architecture, scaled:
+  ESMC-300M (biohub/ESMC-300M)  —  30 layers, hidden=960
+  ESMC-600M (biohub/ESMC-600M)  —  36 layers, hidden=1152
+  ESMC-6B   (biohub/ESMC-6B)    —  80 layers, hidden=2560  (~12 GB bf16)
 
 Architecture notes
 ------------------
   pre-LayerNorm transformer · RoPE (base=10000) · QK-Norm · SwiGLU FFN
   300M: 30 layers, hidden=960,  heads=15, head_dim=64, intermediate=2560
   600M: 36 layers, hidden=1152, heads=16, head_dim=72, intermediate=3072
+  6B:   80 layers, hidden=2560, heads=40, head_dim=64, intermediate=6912
   Residue scaling: every residual branch divided by sqrt(n_layers / 36)
-    300M: sqrt(30/36) ≈ 0.913   600M: sqrt(36/36) = 1.000
+    300M: sqrt(30/36) ≈ 0.913   600M: sqrt(36/36) = 1.000   6B: sqrt(80/36) ≈ 1.491
 
 Optimization levels (opt_level kwarg to from_pretrained / optimize)
 --------------------------------------------------------------------
@@ -259,12 +263,18 @@ class _LMHead(nn.Module):
 # ---------------------------------------------------------------------------
 
 class EsmcMLX(nn.Module):
-    """ESMC-300M / ESMC-600M native MLX model for Apple Silicon.
+    """ESMC-300M / ESMC-600M / ESMC-6B native MLX model for Apple Silicon.
+
+    All three published ESMC checkpoints share the same architecture and are
+    supported identically — only layer count and hidden width differ.
 
     Typical usage::
 
-        model = EsmcMLX.from_pretrained("biohub/ESMC-300M", opt_level=3)
-        ids   = mx.array(tokenizer(seq)["input_ids"], dtype=mx.int32)
+        model  = EsmcMLX.from_pretrained("biohub/ESMC-300M", opt_level=3)
+        model  = EsmcMLX.from_pretrained("biohub/ESMC-600M", opt_level=3)
+        model  = EsmcMLX.from_pretrained("biohub/ESMC-6B",   opt_level=2)  # ≥16 GB RAM
+
+        ids    = mx.array(tokenizer(seq)["input_ids"], dtype=mx.int32)
         logits = model(ids)          # [B, L, 64]
         hidden, _, attn = model.encode(ids, return_attentions=True)
     """
@@ -272,6 +282,9 @@ class EsmcMLX(nn.Module):
     CONFIGS = {
         "biohub/ESMC-300M": dict(hidden=960,  n_heads=15, n_layers=30, intermediate=2560),
         "biohub/ESMC-600M": dict(hidden=1152, n_heads=16, n_layers=36, intermediate=3072),
+        # ESMC-6B: same architecture, scaled to 80 layers / hidden=2560.
+        # Memory: ~12 GB bf16, ~3 GB mxfp4. Requires M-series Mac with ≥16 GB RAM.
+        "biohub/ESMC-6B":   dict(hidden=2560, n_heads=40, n_layers=80, intermediate=6912),
     }
 
     OPT_NAMES = {
@@ -440,11 +453,16 @@ class EsmcMLX(nn.Module):
 
         Parameters
         ----------
-        repo_id   : "biohub/ESMC-300M" or "biohub/ESMC-600M"
-        opt_level : 0-4, default=3 (bf16+compile — best quality/speed trade-off)
+        repo_id   : "biohub/ESMC-300M", "biohub/ESMC-600M", or "biohub/ESMC-6B"
+        opt_level : 0-4, default=3 (bf16+compile — best quality/speed trade-off).
+                    For ESMC-6B on machines with <24 GB RAM, use opt_level=2 to
+                    stay in bf16 without JIT warmup memory overhead.
         """
         if repo_id not in cls.CONFIGS:
-            raise ValueError(f"Unknown repo: {repo_id!r}")
+            raise ValueError(
+                f"Unknown repo: {repo_id!r}. "
+                f"Supported: {sorted(cls.CONFIGS)}"
+            )
         cfg = cls.CONFIGS[repo_id]
 
         model = cls(**cfg)
