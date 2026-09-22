@@ -16,6 +16,21 @@ def is_cuda_available() -> bool:
     return torch.cuda.is_available()
 
 
+def is_mlx_available() -> bool:
+    """Check if Apple MLX (native Metal ML framework) is available.
+
+    MLX is Apple's purpose-built ML framework for M-series chips.
+    It uses lazy evaluation and unified memory (zero CPU/GPU copy).
+    When available, ``load_esmc(device="mlx")`` routes to the native
+    MLX backend instead of PyTorch MPS.
+    """
+    try:
+        import mlx.core  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def resolve_device(requested: str | torch.device | None = None) -> torch.device:
     """Resolve a requested device string or torch.device to an available device.
 
@@ -179,3 +194,42 @@ def synchronize(device: torch.device | str | None = None) -> None:
             torch.mps.synchronize()
         except RuntimeError:
             pass
+
+
+def load_esmc(
+    model_name: str = "biohub/ESMC-300M",
+    device: str | torch.device | None = "auto",
+):
+    """Load an ESMC model, routing to the optimal backend for the current hardware.
+
+    Backend selection for ``device="auto"``:
+      - CUDA available        → ``EsmcForMaskedLM`` on CUDA (bfloat16)
+      - MLX available (M-chip)→ ``EsmcMLX`` — native Metal, no PyTorch overhead
+      - MPS only              → ``EsmcForMaskedLM`` on MPS (float32)
+      - CPU fallback          → ``EsmcForMaskedLM`` on CPU
+
+    Pass ``device="mlx"`` to force the MLX backend regardless of other devices.
+    Pass ``device="mps"`` to force the PyTorch MPS backend.
+
+    Returns either an ``EsmcForMaskedLM`` (PyTorch) or ``EsmcMLX`` instance.
+    Both expose the same ``__call__(input_ids) -> logits`` interface.
+
+    Example::
+
+        model = load_esmc("biohub/ESMC-300M")          # auto-selects best backend
+        model = load_esmc("biohub/ESMC-300M", "mlx")   # native MLX on Apple Silicon
+        model = load_esmc("biohub/ESMC-600M", "cuda")  # CUDA
+
+    """
+    dev_str = str(device).lower().strip() if device is not None else "auto"
+
+    use_mlx = dev_str == "mlx" or (dev_str == "auto" and not is_cuda_available() and is_mlx_available())
+
+    if use_mlx:
+        from esm.models.esmc.mlx_model import EsmcMLX  # optional dep
+        return EsmcMLX.from_pretrained(model_name)
+
+    from esm.models.esmc import EsmcForMaskedLM
+    torch_device = resolve_device(device)
+    dtype = get_default_model_dtype(torch_device)
+    return EsmcForMaskedLM.from_pretrained(model_name, device=torch_device, dtype=dtype or None)
