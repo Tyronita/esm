@@ -1,5 +1,6 @@
 import os
 import warnings
+from typing import Any
 
 import torch
 
@@ -199,7 +200,7 @@ def synchronize(device: torch.device | str | None = None) -> None:
 
 def load_esmc(
     model_name: str = "biohub/ESMC-300M", device: str | torch.device | None = "auto"
-):
+) -> Any:
     """Load an ESMC model, routing to the optimal backend for the current hardware.
 
     Backend selection for ``device="auto"``:
